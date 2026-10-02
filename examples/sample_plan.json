@@ -1,0 +1,26 @@
+{
+  "project_name": "example-service",
+  "goal": "重构订单状态机，增加超时自动取消机制",
+  "tasks": [
+    {
+      "id": "task_1_model",
+      "description": "在 models.py 中增加 OrderStatus.EXPIRED 枚举与超时字段",
+      "target_files": [
+        "models.py"
+      ],
+      "oracle_cmd": "python -m unittest tests.test_order_model",
+      "dependencies": []
+    },
+    {
+      "id": "task_2_cron",
+      "description": "在 worker.py 中增加扫描超时订单并转为 EXPIRED 的定时协程",
+      "target_files": [
+        "worker.py"
+      ],
+      "oracle_cmd": "python -m unittest tests.test_order_expiry_worker",
+      "dependencies": [
+        "task_1_model"
+      ]
+    }
+  ]
+}
