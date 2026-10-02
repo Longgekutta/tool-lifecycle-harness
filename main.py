@@ -42,6 +42,7 @@ from core.oracle_freezer import OracleFreezer
 from core.checkpoint_sentinel import CheckpointSentinel
 from core.evidence_gate import EvidenceGate
 from core.reflexion_distiller import ReflexionDistiller
+from core.candidate_patch_engine import CandidatePatchEngine
 
 
 def cmd_setup(workspace: str):
@@ -258,6 +259,36 @@ def cmd_reflect(workspace: str, notes: list):
     print("=" * 70)
 
 
+def cmd_apply(workspace: str):
+    res = CandidatePatchEngine.apply_candidate_patch(workspace)
+    if res["success"]:
+        print("=" * 70)
+        print(" 🚀 候选补丁已安全合入主分支！(Candidate Patch Merged)")
+        print("=" * 70)
+        print(" • 遵循 Google Tricorder 规范，改动已固化为正式提交。")
+        print("=" * 70)
+    else:
+        print(f"[ERROR] 补丁合流失败: {res.get('reason')}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_discard(workspace: str):
+    res = CandidatePatchEngine.discard_candidate_patch(workspace)
+    print("=" * 70)
+    print(" 🗑️ 候选补丁已彻底丢弃，工作区已恢复至干净基线！")
+    print("=" * 70)
+
+
+def cmd_packet(workspace: str):
+    sm = LifecycleStateMachine(workspace)
+    packet = CandidatePatchEngine.build_review_packet(
+        workspace,
+        sm.get_state(),
+        reason="MANUAL_INSPECT_PACKET"
+    )
+    print(json.dumps(packet, ensure_ascii=False, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description="tool-lifecycle-harness: 智能体七阶工程生命周期状态机与证据门禁调度器")
     parser.add_argument("verb", nargs="?", default="health", help="通用动词或生命周期操作")
@@ -306,6 +337,12 @@ def main():
             cmd_rollback(ws)
         elif v == "reflect":
             cmd_reflect(ws, parsed.args)
+        elif v == "apply":
+            cmd_apply(ws)
+        elif v == "discard":
+            cmd_discard(ws)
+        elif v == "packet":
+            cmd_packet(ws)
         elif v == "run":
             cmd_setup(ws)
             cmd_health(ws)

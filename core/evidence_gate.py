@@ -47,40 +47,50 @@ class EvidenceGate:
                 "reason": f"🚨 拦截到神谕测试篡改行为！{tamper_err}。严禁为了通过测试而篡改断言标准！"
             }
 
-        # 2. 物理执行验收指令
-        t0 = time.perf_counter()
-        proc = subprocess.run(
-            oracle_cmd,
-            shell=True,
-            cwd=str(ws),
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        elapsed_sec = round(time.perf_counter() - t0, 3)
+        # 2. 物理执行验收指令 (采用 ProcessGuard 硬守护防僵尸进程与死循环)
+        from .process_guard import ProcessGuard
+        from .candidate_patch_engine import CandidatePatchEngine
+        from .mutation_validator import MutationValidator
 
-        is_passed = (proc.returncode == 0)
+        res = ProcessGuard.run_guarded_command(oracle_cmd, str(ws), timeout_sec=60)
 
-        # 3. 统计代码变动物理事实
-        diff_proc = subprocess.run(["git", "diff", "--stat"], cwd=str(ws), capture_output=True, text=True)
-        diff_stat = diff_proc.stdout.strip() if diff_proc.returncode == 0 else ""
+        if res["timed_out"]:
+            return {
+                "is_cleared": False,
+                "reason": "🚨 验收指令执行超时 (超过 60 秒)！系统已强制强杀子进程树，阻断死循环占用。",
+                "exit_code": -124,
+                "verdict": "EXECUTION_TIMEOUT_REJECTED"
+            }
+
+        is_passed = (res["exit_code"] == 0)
+
+        # 3. 统计代码变动物理事实与候选补丁
+        diff_info = CandidatePatchEngine.generate_candidate_patch(str(ws))
 
         evidence_bundle = {
             "is_cleared": is_passed,
             "timestamp": time.time(),
-            "execution_duration_sec": elapsed_sec,
+            "execution_duration_sec": round(res["wall_latency_ms"] / 1000, 3),
             "oracle_cmd": oracle_cmd,
-            "exit_code": proc.returncode,
-            "stdout_tail": proc.stdout[-500:] if proc.stdout else "",
-            "stderr_tail": proc.stderr[-500:] if proc.stderr else "",
+            "exit_code": res["exit_code"],
+            "stdout_tail": res["stdout"][-500:] if res["stdout"] else "",
+            "stderr_tail": res["stderr"][-500:] if res["stderr"] else "",
             "anti_tampering_passed": True,
-            "git_diff_stat": diff_stat,
+            "patch_metrics": diff_info,
             "verdict": "PHYSICAL_PROOF_VALIDATED" if is_passed else "VERIFICATION_REJECTED"
         }
 
-        # 持久化证据档案
+        # 持久化证据档案与人机审查数据包
         bundle_file = ws / ".agent_lifecycle" / "evidence_bundle.json"
         bundle_file.parent.mkdir(parents=True, exist_ok=True)
         bundle_file.write_text(json.dumps(evidence_bundle, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # 自动生成 review_packet.json
+        CandidatePatchEngine.build_review_packet(
+            str(ws),
+            {"current_phase": "G6_EVIDENCE_VERIFIED" if is_passed else "G5_CHECKPOINT_SECURED"},
+            evidence_bundle=evidence_bundle,
+            reason="PHYSICAL_PROOF_PASSED" if is_passed else "ORACLE_ASSERTION_FAILED"
+        )
 
         return evidence_bundle

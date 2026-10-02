@@ -49,16 +49,13 @@ class OracleFreezer:
                     file_hashes[str(tf)] = "NOT_CREATED_YET"
 
         # 2. 物理执行神谕指令，检验红灯先验 (TDD 核心：新功能代码未写前必须失败)
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=str(ws),
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
+        from .process_guard import ProcessGuard
+        res = ProcessGuard.run_guarded_command(cmd, str(ws), timeout_sec=30)
 
-        is_red = (proc.returncode != 0)
+        if res["timed_out"]:
+            raise OracleFreezeError("🚨 神谕指令执行超时！超过 30 秒无响应，已强杀子进程树，防止死循环命令挂起宿主机！")
+
+        is_red = (res["exit_code"] != 0)
 
         # 严格红灯断言
         if not is_red and not allow_preexisting_green:
@@ -77,8 +74,9 @@ class OracleFreezer:
             "cmd_sha256": cmd_hash,
             "test_file_hashes": file_hashes,
             "pre_execution_red_state_verified": is_red,
-            "initial_exit_code": proc.returncode,
-            "initial_stderr_sample": (proc.stderr or proc.stdout)[:300].strip()
+            "initial_exit_code": res["exit_code"],
+            "initial_stderr_sample": (res["stderr"] or res["stdout"])[:300].strip(),
+            "wall_latency_ms": res["wall_latency_ms"]
         }
 
     @classmethod

@@ -22,6 +22,9 @@ from core.oracle_freezer import OracleFreezer, OracleFreezeError
 from core.checkpoint_sentinel import CheckpointSentinel
 from core.evidence_gate import EvidenceGate
 from core.reflexion_distiller import ReflexionDistiller
+from core.process_guard import ProcessGuard
+from core.mutation_validator import MutationValidator
+from core.candidate_patch_engine import CandidatePatchEngine
 
 
 class TestLifecycleStateMachine(unittest.TestCase):
@@ -227,6 +230,80 @@ class TestLifecycleStateMachine(unittest.TestCase):
             # 最终验证证据文件已落地
             self.assertTrue((ws / ".agent_lifecycle" / "evidence_bundle.json").exists())
             self.assertTrue((ws / "docs" / "ADR_LEDGER.md").exists())
+
+    def test_process_guard_timeout_and_tree_kill(self):
+        """测试操作系统级子进程硬超时与强杀守护"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            py_sleep_cmd = f'"{sys.executable}" -c "import time; time.sleep(3)"'
+            res = ProcessGuard.run_guarded_command(py_sleep_cmd, tmpdir, timeout_sec=1)
+            self.assertTrue(res["timed_out"])
+            self.assertEqual(res["exit_code"], -124)
+
+    def test_mutation_validator_distinguishes_weak_vs_sharp_assertions(self):
+        """测试语义变异检验：精准捕获无断言弱测试，放行敏锐强断言"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            target_file = ws / "calculator.py"
+            target_file.write_text("def calc():\n    return 42\n", encoding="utf-8")
+
+            # 场景 1: 弱断言测试 (只调用，无 assert，或者吞异常)
+            weak_test = ws / "test_weak.py"
+            weak_test.write_text(
+                "import calculator\n"
+                "try:\n"
+                "    calculator.calc()\n"
+                "except Exception:\n"
+                "    pass\n",
+                encoding="utf-8"
+            )
+            res_weak = MutationValidator.verify_assertion_strength(
+                str(ws), "calculator.py", f'"{sys.executable}" test_weak.py'
+            )
+            self.assertFalse(res_weak["verified"])
+            self.assertIn("弱测试断言", res_weak["reason"])
+
+            # 场景 2: 敏锐强断言 (assert calc() == 42)
+            sharp_test = ws / "test_sharp.py"
+            sharp_test.write_text(
+                "import calculator\n"
+                "assert calculator.calc() == 42\n",
+                encoding="utf-8"
+            )
+            res_sharp = MutationValidator.verify_assertion_strength(
+                str(ws), "calculator.py", f'"{sys.executable}" test_sharp.py'
+            )
+            self.assertTrue(res_sharp["verified"])
+            self.assertTrue(res_sharp["mutant_killed"])
+
+    def test_candidate_patch_and_review_packet(self):
+        """测试候选补丁与审查数据包：非侵入式审查与回滚还原"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            subprocess.run(["git", "init"], cwd=str(ws), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(ws), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(ws), capture_output=True)
+
+            code_file = ws / "core.py"
+            code_file.write_text("v = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=str(ws), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(ws), capture_output=True)
+
+            # 产生未提交修改
+            code_file.write_text("v = 2\n# new logic\n", encoding="utf-8")
+
+            # 组装审查数据包
+            packet = CandidatePatchEngine.build_review_packet(
+                str(ws),
+                {"current_phase": "G6_EVIDENCE_VERIFIED"},
+                reason="TEST_SUITE_CHECK"
+            )
+            self.assertTrue((ws / ".agent_lifecycle" / "review_packet.json").exists())
+            self.assertTrue((ws / ".agent_lifecycle" / "candidate.patch").exists())
+            self.assertTrue(packet["patch_metrics"]["has_changes"])
+
+            # 丢弃补丁还原工作区
+            CandidatePatchEngine.discard_candidate_patch(str(ws))
+            self.assertEqual(code_file.read_text(encoding="utf-8"), "v = 1\n")
 
 
 if __name__ == "__main__":
