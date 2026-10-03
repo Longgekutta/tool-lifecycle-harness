@@ -75,18 +75,37 @@ run.ps1 freeze "python -m unittest tests.test_queue"
 run.ps1 begin task_1
 
 # 6. G6: 运行独立机器证据门禁 (verify)
-# 机器重放神谕指令，校验 exit code == 0 与防篡改哈希，生成 evidence_bundle.json
+# 机器重放神谕指令，校验 exit code == 0 与防篡改哈希，生成 evidence_bundle.json 与 candidate.patch
 run.ps1 verify
 
-# 7. 遇到代码写崩时，一键物理回滚至安全基线 (rollback)
-run.ps1 rollback
+# 7. 查看人机审查数据包与 Unified Diff 候选补丁 (packet)
+run.ps1 packet
 
-# 8. G7: 结项时沉淀 ADR 决策与避坑长期记忆 (reflect)
+# 8. 人类架构师确认无误后，一键安全合流至 Git 主线 (apply)
+run.ps1 apply
+
+# 9. 遇到代码写崩或放弃改动时，一键物理回滚/彻底丢弃 (rollback 或 discard)
+run.ps1 rollback
+run.ps1 discard
+
+# 10. G7: 结项时沉淀 ADR 决策与避坑长期记忆 (reflect)
 run.ps1 reflect "采用双指针环形缓冲区代替锁" "pitfall:避免在大并发下频繁扩容"
 
-# 9. 查看当前状态看板 (status)
+# 11. 查看当前状态看板 (status)
 run.ps1 status
 ```
+
+---
+
+## 🛡️ 核心防御装具与实证机制 (Defense & Proving Matrix)
+
+| 防御组件 | 第一性原理使命 | 工业级实现机制 |
+| :--- | :--- | :--- |
+| **`ProcessGuard`** | **根除子进程挂起与死循环** | 操作系统级 30 秒硬超时；Windows `taskkill /F /T` / Unix `killpg` 树状强杀，绝对不泄漏僵尸孤儿进程 |
+| **`MutationValidator`** | **终结虚假与弱测试断言** | 在业务函数注入精细化语义返回值变异（Return Mutation）；测试必须敏锐报红（Kill Mutant），杜绝假测试放水 |
+| **`CandidatePatchEngine`** | **恪守非侵入、绝对不越权** | 绝不在执行中污染主干；自动提取 Unified Diff（`candidate.patch`）与审查数据包（`review_packet.json`），合流权保留给人类 |
+| **`OracleFreezer`** | **杜绝同义反复与事后改断言** | 编码前强制校验红灯失败态；计算神谕指令与测试文件 SHA-256 不可变哈希，篡改即报警 |
+| **`CheckpointSentinel`** | **零成本安全爆炸半径控制** | 执行前锁定 Git 物理快照；任何门禁失败或写崩通过 `git reset --hard` + `git clean -fd` 瞬间 100% 无损还原 |
 
 ---
 
@@ -98,7 +117,8 @@ run.ps1 status
 | **`LangGraph` (LangChain)** | 吸收状态图 (StateGraph) 确定性转移控制，严禁 AI 自行跳步 |
 | **`Reflexion` (Shinn et al.)** | 吸收经验自省模型，将报错与重构沉淀为持久记忆与 ADR 决策库 |
 | **`Aider` (Paul Gauthier)** | 吸收 Git Checkpoint 原子提交与一键失败回滚哲学 |
-| **`Meta SapFix` / `Google Tricorder`** | 吸收独立证据门禁（Proof-or-Stop Gate），剥离工兵与裁判 |
+| **`Meta SapFix` / `Google Tricorder`** | 吸收独立证据门禁（Proof-or-Stop Gate）与候选补丁评审包（Candidate Patch） |
+| **`Hypothesis` / `Mutmut`** | 吸收语义变异测试（Mutation Testing）理念，严密验证测试断言真实杀伤力 |
 
 ---
 
