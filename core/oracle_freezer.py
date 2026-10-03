@@ -59,7 +59,7 @@ class OracleFreezer:
                     if tf_path.exists() and tf_path.suffix == ".py":
                         src_text = tf_path.read_text(encoding="utf-8", errors="ignore")
                         findings = audit_source_code(src_text, file_path=str(tf_path))
-                        gaming_codes = {"PRB-E104", "PRB-E105", "PRB-E401", "PRB-E402"}
+                        gaming_codes = {"PRB-E104", "PRB-E105", "PRB-E401", "PRB-E402", "PRB-E003"}
                         bad_findings = [f for f in findings if f.code in gaming_codes]
                         if bad_findings:
                             f0 = bad_findings[0]
