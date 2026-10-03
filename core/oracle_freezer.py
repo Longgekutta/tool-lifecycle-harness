@@ -48,6 +48,29 @@ class OracleFreezer:
                 else:
                     file_hashes[str(tf)] = "NOT_CREATED_YET"
 
+        # 1.1 AST 语义防作弊检验 (跨工程联动: tool-problem-optima 裁决神谕)
+        if test_files:
+            try:
+                if "D:/github/tool-problem-optima" not in sys.path:
+                    sys.path.insert(0, "D:/github/tool-problem-optima")
+                from engine.ast_interceptor import audit_source_code
+                for tf in test_files:
+                    tf_path = ws / tf if not Path(tf).is_absolute() else Path(tf)
+                    if tf_path.exists() and tf_path.suffix == ".py":
+                        src_text = tf_path.read_text(encoding="utf-8", errors="ignore")
+                        findings = audit_source_code(src_text, file_path=str(tf_path))
+                        gaming_codes = {"PRB-E104", "PRB-E105", "PRB-E401", "PRB-E402"}
+                        bad_findings = [f for f in findings if f.code in gaming_codes]
+                        if bad_findings:
+                            f0 = bad_findings[0]
+                            raise OracleFreezeError(
+                                f"🚨 G3 验收神谕物理拒绝：测试文件 [{tf}] 包含作弊测试病理 [{f0.code}] {f0.name}！\n"
+                                f"详细说明: {f0.message}\n"
+                                f"修复建议: {f0.remediation_suggestion}"
+                            )
+            except ImportError:
+                pass
+
         # 2. 物理执行神谕指令，检验红灯先验 (TDD 核心：新功能代码未写前必须失败)
         from .process_guard import ProcessGuard
         res = ProcessGuard.run_guarded_command(cmd, str(ws), timeout_sec=30)

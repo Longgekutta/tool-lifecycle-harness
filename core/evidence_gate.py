@@ -67,6 +67,28 @@ class EvidenceGate:
         # 3. 统计代码变动物理事实与候选补丁
         diff_info = CandidatePatchEngine.generate_candidate_patch(str(ws))
 
+        # 3.1 跨工程联动: 调取 tool-problem-optima 的 Tri-Sieve Oracle 进行终审裁决
+        tri_sieve_verdict = None
+        if is_passed and diff_info.get("changed_files"):
+            try:
+                if "D:/github/tool-problem-optima" not in sys.path:
+                    sys.path.insert(0, "D:/github/tool-problem-optima")
+                from engine.tri_sieve_oracle import TriSieveOracle
+                oracle = TriSieveOracle()
+                for cf in diff_info.get("changed_files", []):
+                    cf_path = ws / cf
+                    if cf_path.exists() and cf_path.suffix == ".py":
+                        content = cf_path.read_text(encoding="utf-8", errors="ignore")
+                        v = oracle.judge_mutation(content, file_path=str(cf_path))
+                        if not v.is_valid:
+                            is_passed = False
+                            tri_sieve_verdict = v.to_dict()
+                            break
+                        else:
+                            tri_sieve_verdict = v.to_dict()
+            except ImportError:
+                pass
+
         evidence_bundle = {
             "is_cleared": is_passed,
             "timestamp": time.time(),
@@ -77,6 +99,7 @@ class EvidenceGate:
             "stderr_tail": res["stderr"][-500:] if res["stderr"] else "",
             "anti_tampering_passed": True,
             "patch_metrics": diff_info,
+            "tri_sieve_verdict": tri_sieve_verdict,
             "verdict": "PHYSICAL_PROOF_VALIDATED" if is_passed else "VERIFICATION_REJECTED"
         }
 
