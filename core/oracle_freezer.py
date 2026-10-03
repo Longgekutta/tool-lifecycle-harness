@@ -11,6 +11,7 @@ core/oracle_freezer.py: G3 验收神谕前置与红灯先验断言器 (Oracle Fr
 
 import os
 import sys
+import ast
 import hashlib
 import subprocess
 from pathlib import Path
@@ -48,28 +49,33 @@ class OracleFreezer:
                 else:
                     file_hashes[str(tf)] = "NOT_CREATED_YET"
 
-        # 1.1 AST 语义防作弊检验 (跨工程联动: tool-problem-optima 裁决神谕)
+        # 1.1 AST 语义防作弊检验 (动态发现 tool-problem-optima 或退化至内置独立 AST 检验)
         if test_files:
-            try:
-                if "D:/github/tool-problem-optima" not in sys.path:
-                    sys.path.insert(0, "D:/github/tool-problem-optima")
-                from engine.ast_interceptor import audit_source_code
-                for tf in test_files:
-                    tf_path = ws / tf if not Path(tf).is_absolute() else Path(tf)
-                    if tf_path.exists() and tf_path.suffix == ".py":
-                        src_text = tf_path.read_text(encoding="utf-8", errors="ignore")
-                        findings = audit_source_code(src_text, file_path=str(tf_path))
-                        gaming_codes = {"PRB-E104", "PRB-E105", "PRB-E401", "PRB-E402", "PRB-E003"}
-                        bad_findings = [f for f in findings if f.code in gaming_codes]
-                        if bad_findings:
-                            f0 = bad_findings[0]
-                            raise OracleFreezeError(
-                                f"🚨 G3 验收神谕物理拒绝：测试文件 [{tf}] 包含作弊测试病理 [{f0.code}] {f0.name}！\n"
-                                f"详细说明: {f0.message}\n"
-                                f"修复建议: {f0.remediation_suggestion}"
-                            )
-            except ImportError:
-                pass
+            auditor = cls._resolve_ast_auditor()
+            for tf in test_files:
+                tf_path = ws / tf if not Path(tf).is_absolute() else Path(tf)
+                if tf_path.exists() and tf_path.suffix == ".py":
+                    src_text = tf_path.read_text(encoding="utf-8", errors="ignore")
+                    if auditor:
+                        try:
+                            findings = auditor(src_text, file_path=str(tf_path))
+                            gaming_codes = {"PRB-E104", "PRB-E105", "PRB-E401", "PRB-E402", "PRB-E003"}
+                            bad_findings = [f for f in findings if f.code in gaming_codes]
+                            if bad_findings:
+                                f0 = bad_findings[0]
+                                raise OracleFreezeError(
+                                    f"🚨 G3 验收神谕物理拒绝：测试文件 [{tf}] 包含作弊测试病理 [{f0.code}] {f0.name}！\n"
+                                    f"详细说明: {f0.message}\n"
+                                    f"修复建议: {f0.remediation_suggestion}"
+                                )
+                        except OracleFreezeError:
+                            raise
+                        except Exception:
+                            # 容错降级至独立内置检验
+                            cls._standalone_ast_check(src_text, str(tf_path))
+                    else:
+                        # 独立模式运行：执行内置 AST 防作弊断言
+                        cls._standalone_ast_check(src_text, str(tf_path))
 
         # 2. 物理执行神谕指令，检验红灯先验 (TDD 核心：新功能代码未写前必须失败)
         from .process_guard import ProcessGuard
@@ -123,3 +129,63 @@ class OracleFreezer:
                 return False, f"神谕测试文件发生非授权篡改 (Hash Mismatch): {rel_file}"
 
         return True, None
+
+    @classmethod
+    def _resolve_ast_auditor(cls):
+        """动态解析外部 tool-problem-optima 的 audit_source_code，解耦绝对路径依赖"""
+        try:
+            from engine.ast_interceptor import audit_source_code
+            return audit_source_code
+        except ImportError:
+            pass
+
+        candidates = []
+        env_dir = os.environ.get("TOOL_PROBLEM_OPTIMA_PATH")
+        if env_dir:
+            candidates.append(Path(env_dir))
+        # 探测同级目录结构
+        candidates.append(Path(__file__).resolve().parent.parent.parent / "tool-problem-optima")
+        # 探测标准本地开发目录
+        candidates.append(Path("D:/github/tool-problem-optima"))
+
+        for c in candidates:
+            if c.exists() and (c / "engine" / "ast_interceptor.py").exists():
+                c_str = str(c.resolve())
+                if c_str not in sys.path:
+                    sys.path.insert(0, c_str)
+                try:
+                    from engine.ast_interceptor import audit_source_code
+                    return audit_source_code
+                except ImportError:
+                    continue
+        return None
+
+    @classmethod
+    def _standalone_ast_check(cls, src_text: str, file_path: str):
+        """零依赖独立运行模式下的 AST 基本防作弊与语法断言器"""
+        try:
+            tree = ast.parse(src_text, filename=file_path)
+        except SyntaxError as e:
+            raise OracleFreezeError(f"🚨 G3 验收神谕物理拒绝：测试文件 [{file_path}] 存在语法解析错误！\n详细说明: {e}")
+
+        has_test_func = False
+        test_funcs_with_asserts = 0
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+                has_test_func = True
+                assert_count = sum(1 for n in ast.walk(node) if isinstance(n, (ast.Assert, ast.Call)))
+                if assert_count > 0:
+                    test_funcs_with_asserts += 1
+                for n in ast.walk(node):
+                    if isinstance(n, ast.Assert):
+                        test_expr = n.test
+                        if isinstance(test_expr, ast.Constant) and test_expr.value is True:
+                            raise OracleFreezeError(f"🚨 G3 验收神谕物理拒绝：测试文件 [{file_path}] 包含恒真断言 'assert True' 作弊！")
+                        if isinstance(test_expr, ast.Compare):
+                            if (isinstance(test_expr.left, ast.Constant) and
+                                len(test_expr.comparators) == 1 and
+                                isinstance(test_expr.comparators[0], ast.Constant) and
+                                test_expr.left.value == test_expr.comparators[0].value):
+                                raise OracleFreezeError(f"🚨 G3 验收神谕物理拒绝：测试文件 [{file_path}] 包含恒真数值比对断言作弊！")
+        if has_test_func and test_funcs_with_asserts == 0:
+            raise OracleFreezeError(f"🚨 G3 验收神谕物理拒绝：测试文件 [{file_path}] 包含测试函数但缺少任何断言或调用验证！")

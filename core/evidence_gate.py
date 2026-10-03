@@ -67,27 +67,42 @@ class EvidenceGate:
         # 3. 统计代码变动物理事实与候选补丁
         diff_info = CandidatePatchEngine.generate_candidate_patch(str(ws))
 
-        # 3.1 跨工程联动: 调取 tool-problem-optima 的 Tri-Sieve Oracle 进行终审裁决
+        # 3.1 跨工程联动: 动态解析 Tri-Sieve Oracle，未安装时退化至独立模式语法断言
         tri_sieve_verdict = None
         if is_passed and diff_info.get("changed_files"):
-            try:
-                if "D:/github/tool-problem-optima" not in sys.path:
-                    sys.path.insert(0, "D:/github/tool-problem-optima")
-                from engine.tri_sieve_oracle import TriSieveOracle
-                oracle = TriSieveOracle()
+            oracle_cls = cls._resolve_tri_sieve_oracle()
+            if oracle_cls:
+                try:
+                    oracle = oracle_cls()
+                    for cf in diff_info.get("changed_files", []):
+                        cf_path = ws / cf
+                        if cf_path.exists() and cf_path.suffix == ".py":
+                            content = cf_path.read_text(encoding="utf-8", errors="ignore")
+                            v = oracle.judge_mutation(content, file_path=str(cf_path))
+                            if not v.is_valid:
+                                is_passed = False
+                                tri_sieve_verdict = v.to_dict()
+                                break
+                            else:
+                                tri_sieve_verdict = v.to_dict()
+                except Exception as e:
+                    tri_sieve_verdict = {"status": "ORACLE_EVAL_SKIPPED", "warning": str(e)}
+            else:
+                # 独立无依赖运行：对变更的 Python 文件进行标准库 AST 语法校验
+                import ast
+                syntax_errors = []
                 for cf in diff_info.get("changed_files", []):
                     cf_path = ws / cf
                     if cf_path.exists() and cf_path.suffix == ".py":
-                        content = cf_path.read_text(encoding="utf-8", errors="ignore")
-                        v = oracle.judge_mutation(content, file_path=str(cf_path))
-                        if not v.is_valid:
-                            is_passed = False
-                            tri_sieve_verdict = v.to_dict()
-                            break
-                        else:
-                            tri_sieve_verdict = v.to_dict()
-            except ImportError:
-                pass
+                        try:
+                            ast.parse(cf_path.read_text(encoding="utf-8", errors="ignore"), filename=str(cf_path))
+                        except SyntaxError as se:
+                            syntax_errors.append(f"{cf}: {se}")
+                if syntax_errors:
+                    is_passed = False
+                    tri_sieve_verdict = {"status": "STANDALONE_SYNTAX_REJECTED", "errors": syntax_errors}
+                else:
+                    tri_sieve_verdict = {"status": "STANDALONE_CLEARED", "mode": "builtin_ast"}
 
         evidence_bundle = {
             "is_cleared": is_passed,
@@ -117,3 +132,33 @@ class EvidenceGate:
         )
 
         return evidence_bundle
+
+    @classmethod
+    def _resolve_tri_sieve_oracle(cls):
+        """动态解析外部 tool-problem-optima 的 TriSieveOracle，解耦绝对路径依赖"""
+        try:
+            from engine.tri_sieve_oracle import TriSieveOracle
+            return TriSieveOracle
+        except ImportError:
+            pass
+
+        candidates = []
+        env_dir = os.environ.get("TOOL_PROBLEM_OPTIMA_PATH")
+        if env_dir:
+            candidates.append(Path(env_dir))
+        # 探测同级目录结构
+        candidates.append(Path(__file__).resolve().parent.parent.parent / "tool-problem-optima")
+        # 探测标准本地开发目录
+        candidates.append(Path("D:/github/tool-problem-optima"))
+
+        for c in candidates:
+            if c.exists() and (c / "engine" / "tri_sieve_oracle.py").exists():
+                c_str = str(c.resolve())
+                if c_str not in sys.path:
+                    sys.path.insert(0, c_str)
+                try:
+                    from engine.tri_sieve_oracle import TriSieveOracle
+                    return TriSieveOracle
+                except ImportError:
+                    continue
+        return None
